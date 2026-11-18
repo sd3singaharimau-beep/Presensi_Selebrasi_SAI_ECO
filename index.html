@@ -1,0 +1,271 @@
+// =========================================================================
+// GANTI URL DI BAWAH INI DENGAN URL WEB APP GOOGLE APPS SCRIPT ANDA
+// =========================================================================
+const SCRIPT_URL = "TEMPEL_URL_WEB_APP_ANDA_DI_SINI";
+let allClasses = [];
+let allStudents = [];
+let currentClassObj = null;
+let dailyAttendanceMap = {}; // Key: ID_Siswa -> { status, checkIn, checkOut }
+const dateInput = document.getElementById('attendance-date');
+dateInput.value = new Date().toISOString().split('T');
+function showLoading(text = "Memproses data...") {
+document.getElementById('loading-text').textContent = text;
+document.getElementById('loading-overlay').classList.remove('hidden');
+}
+function hideLoading() {
+document.getElementById('loading-overlay').classList.add('hidden');
+}
+// JAM REALTIME
+function updateClock() {
+const now = new Date();
+document.getElementById('live-date').textContent = now.toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+document.getElementById('live-clock').textContent = now.toLocaleTimeString('id-ID');
+}
+setInterval(updateClock, 1000);
+updateClock();
+// MUAT DATA KELAS & SISWA SAAT PERTAMA DIBUKA
+async function initApp() {
+if (SCRIPT_URL === "TEMPEL_URL_WEB_APP_ANDA_DI_SINI") {
+hideLoading();
+alert("Perhatian: Anda belum memasukkan URL Google Apps Script pada variabel SCRIPT_URL di dalam kode HTML.");
+return;
+}
+try {
+showLoading("Mengambil data kelas dari Google Sheets...");
+const res = await fetch(${SCRIPT_URL}?action=getInitData);
+const data = await res.json();
+if (data.status === "success") {
+allClasses = data.kelas;
+allStudents = data.siswa;
+const selectClass = document.getElementById('select-class');
+selectClass.innerHTML = '-- Pilih Kelas Anda --';
+allClasses.forEach(k => {
+selectClass.innerHTML += <option value="${k.ID_Kelas}">${k.Nama_Kelas} (Wali: ${k.Wali_Kelas})</option>;
+});
+}
+} catch (err) {
+alert("Gagal terhubung ke Google Sheets. Pastikan URL Web App benar dan akses diatur ke 'Anyone'.");
+console.error(err);
+} finally {
+hideLoading();
+}
+}
+initApp();
+// LOGIN GURU
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+e.preventDefault();
+const selectedId = document.getElementById('select-class').value;
+const pin = document.getElementById('pin-input').value;
+const foundClass = allClasses.find(c => String(c.ID_Kelas) === String(selectedId));
+if (foundClass && String(foundClass.PIN) === String(pin)) {
+currentClassObj = foundClass;
+document.getElementById('login-error').classList.add('hidden');
+document.getElementById('login-screen').classList.add('hidden');
+document.getElementById('dashboard-screen').classList.remove('hidden');
+document.getElementById('nav-class-title').textContent = foundClass.Nama_Kelas;
+document.getElementById('nav-teacher-name').textContent = "Wali Kelas: " + foundClass.Wali_Kelas;
+await loadAttendanceFromSheet();
+} else {
+document.getElementById('login-error').classList.remove('hidden');
+}
+});
+function logout() {
+currentClassObj = null;
+document.getElementById('pin-input').value = '';
+document.getElementById('dashboard-screen').classList.add('hidden');
+document.getElementById('login-screen').classList.remove('hidden');
+}
+dateInput.addEventListener('change', loadAttendanceFromSheet);
+// AMBIL DATA PRESENSI DARI GOOGLE SHEETS
+async function loadAttendanceFromSheet() {
+if (!currentClassObj) return;
+const selectedDate = dateInput.value;
+showLoading("Memuat data presensi...");
+try {
+const url = ${SCRIPT_URL}?action=getAttendance&tanggal=${selectedDate}&idKelas=${currentClassObj.ID_Kelas};
+const res = await fetch(url);
+const result = await res.json();
+dailyAttendanceMap = {};
+if (result.status === "success" && result.data) {
+result.data.forEach(row => {
+dailyAttendanceMap[String(row.ID_Siswa)] = {
+status: row.Status || 'Belum',
+checkIn: row.Jam_Datang || '-',
+checkOut: row.Jam_Pulang || '-'
+};
+});
+}
+renderTable();
+} catch (err) {
+alert("Gagal memuat data presensi.");
+console.error(err);
+} finally {
+hideLoading();
+}
+}
+// RENDER TABEL & FILTER SEMBUNYIKAN YANG SUDAH TERDATA
+function renderTable() {
+const classStudents = allStudents.filter(s => String(s.ID_Kelas) === String(currentClassObj.ID_Kelas));
+const hideRecorded = document.getElementById('hide-recorded-toggle').checked;
+const hideMode = document.getElementById('hide-mode').value;
+const tbody = document.getElementById('student-table-body');
+tbody.innerHTML = '';
+let countHadir = 0, countIzin = 0, countSakit = 0, countAlpa = 0;
+let hiddenCount = 0;
+let visibleIndex = 0;
+classStudents.forEach(student => {
+const rec = dailyAttendanceMap[String(student.ID_Siswa)] || { status: 'Belum', checkIn: '-', checkOut: '-' };
+// Hitung Statistik Total Kelas (tetap dihitung meski baris disembunyikan)
+if (rec.status === 'Hadir') countHadir++;
+else if (rec.status === 'Izin') countIzin++;
+else if (rec.status === 'Sakit') countSakit++;
+else countAlpa++;
+// Logika Sembunyikan Anak yang Sudah Terdata
+let isRecorded = false;
+if (hideMode === 'datang') {
+// Terdata jika status bukan 'Belum' dan bukan 'Alpa'
+isRecorded = (rec.status !== 'Belum' && rec.status !== '');
+} else if (hideMode === 'lengkap') {
+// Terdata jika (Hadir dan sudah ada Jam Pulang) ATAU (Izin/Sakit/Alpa)
+isRecorded = (rec.status === 'Hadir' && rec.checkOut !== '-' && rec.checkOut !== '') ||
+(['Izin', 'Sakit', 'Alpa'].includes(rec.status));
+}
+if (hideRecorded && isRecorded) {
+hiddenCount++;
+return; // Lewati render baris ini
+}
+visibleIndex++;
+const tr = document.createElement('tr');
+tr.className = "hover:bg-slate-50 transition";
+tr.innerHTML = `
+${visibleIndex}
+${student.NIS}
+${student.Nama_Siswa}
+${rec.checkIn}
+${rec.checkOut}
+`;
+tbody.appendChild(tr);
+});
+if (visibleIndex === 0) {
+const msg = hideRecorded
+? "Semua siswa di kelas ini sudah terdata!"
+: "Belum ada siswa di kelas ini.";
+tbody.innerHTML = <tr><td colspan="7" class="text-center py-8 text-slate-500 font-medium">${msg}</td></tr>;
+}
+// Banner Notifikasi Filter
+const filterBanner = document.getElementById('filter-banner');
+if (hideRecorded && hiddenCount > 0) {
+document.getElementById('hidden-count').textContent = hiddenCount;
+filterBanner.classList.remove('hidden');
+} else {
+filterBanner.classList.add('hidden');
+}
+// Update Statistik
+document.getElementById('stat-total').textContent = classStudents.length;
+document.getElementById('stat-hadir').textContent = countHadir;
+document.getElementById('stat-izin').textContent = countIzin;
+document.getElementById('stat-sakit').textContent = countSakit;
+document.getElementById('stat-alpa').textContent = countAlpa;
+}
+function getStatusBadgeClass(status) {
+switch(status) {
+case 'Hadir': return 'bg-emerald-100 text-emerald-800 border-emerald-300';
+case 'Izin': return 'bg-amber-100 text-amber-800 border-amber-300';
+case 'Sakit': return 'bg-blue-100 text-blue-800 border-blue-300';
+case 'Alpa': return 'bg-red-100 text-red-800 border-red-300';
+default: return 'bg-slate-100 text-slate-600 border-slate-300';
+}
+}
+function getCurrentTimeStr() {
+return new Date().toTimeString().slice(0, 5);
+}
+// KIRIM DATA PRESENSI KE GOOGLE SHEETS
+async function syncToSheet(studentId, status, checkIn, checkOut) {
+const student = allStudents.find(s => String(s.ID_Siswa) === String(studentId));
+if (!student) return;
+// Update UI secara optimis agar terasa cepat
+dailyAttendanceMap[String(studentId)] = { status, checkIn, checkOut };
+renderTable();
+const payload = {
+action: "saveAttendance",
+tanggal: dateInput.value,
+idKelas: currentClassObj.ID_Kelas,
+idSiswa: student.ID_Siswa,
+nis: student.NIS,
+namaSiswa: student.Nama_Siswa,
+status: status,
+jamDatang: checkIn,
+jamPulang: checkOut
+};
+try {
+await fetch(SCRIPT_URL, {
+method: "POST",
+body: JSON.stringify(payload)
+});
+} catch (err) {
+alert("Gagal menyinkronkan ke Google Sheets. Periksa koneksi internet Anda.");
+console.error(err);
+}
+}
+function recordCheckIn(studentId) {
+const existing = dailyAttendanceMap[String(studentId)] || { checkOut: '-' };
+syncToSheet(studentId, 'Hadir', getCurrentTimeStr(), existing.checkOut);
+}
+function recordCheckOut(studentId) {
+const existing = dailyAttendanceMap[String(studentId)];
+if (!existing || existing.status !== 'Hadir') {
+alert("Siswa harus tercatat 'Datang' terlebih dahulu sebelum mencatat jam pulang.");
+return;
+}
+syncToSheet(studentId, 'Hadir', existing.checkIn, getCurrentTimeStr());
+}
+function updateStatus(studentId, newStatus) {
+if (newStatus === 'Hadir') {
+syncToSheet(studentId, 'Hadir', getCurrentTimeStr(), '-');
+} else {
+syncToSheet(studentId, newStatus, '-', '-');
+}
+}
+// TAMBAH SISWA KE GOOGLE SHEETS
+function openAddStudentModal() {
+document.getElementById('add-student-modal').classList.remove('hidden');
+document.getElementById('add-student-modal').classList.add('flex');
+}
+function closeAddStudentModal() {
+document.getElementById('add-student-modal').classList.add('hidden');
+document.getElementById('add-student-modal').classList.remove('flex');
+}
+document.getElementById('add-student-form').addEventListener('submit', async function(e) {
+e.preventDefault();
+const nis = document.getElementById('new-nis').value.trim();
+const name = document.getElementById('new-name').value.trim();
+closeAddStudentModal();
+showLoading("Menyimpan siswa baru ke Google Sheets...");
+try {
+const res = await fetch(SCRIPT_URL, {
+method: "POST",
+body: JSON.stringify({
+action: "addStudent",
+nis: nis,
+namaSiswa: name,
+idKelas: currentClassObj.ID_Kelas
+})
+});
+const result = await res.json();
+if (result.status === "success") {
+allStudents.push({
+ID_Siswa: result.idSiswa,
+NIS: nis,
+Nama_Siswa: name,
+ID_Kelas: currentClassObj.ID_Kelas
+});
+document.getElementById('new-nis').value = '';
+document.getElementById('new-name').value = '';
+renderTable();
+}
+} catch (err) {
+alert("Gagal menambah siswa.");
+} finally {
+hideLoading();
+}
+});
